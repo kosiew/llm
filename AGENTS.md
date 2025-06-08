@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This project uses a Python environment for development and tests.
+This project uses a Python environment for development, testing, and documentation.
 
 ## Setting up a development environment
 
@@ -11,6 +11,18 @@ This project uses a Python environment for development and tests.
 2. Run the tests:
    ```bash
    pytest
+   ```
+3. Lint the codebase:
+   ```bash
+   ruff check .
+   ```
+4. Check type hints:
+   ```bash
+   mypy llm
+   ```
+5. Ensure formatting:
+   ```bash
+   black . --check
    ```
 
 ## Building the documentation
