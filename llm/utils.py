@@ -24,12 +24,21 @@ MIME_TYPE_FIXES = {
 
 class Fragment(str):
     def __new__(cls, content, *args, **kwargs):
-        # For immutable classes like str, __new__ creates the string object
+        """Create the underlying immutable string object."""
+
         return super().__new__(cls, content)
 
-    def __init__(self, content, source=""):
-        # Initialize our custom attributes
+    def __init__(self, content, source: str | None = "", ephemeral: bool = False):
+        """Initialize the fragment with optional metadata.
+
+        Args:
+            content: The fragment text.
+            source: Optional location the fragment was loaded from.
+            ephemeral: If ``True`` the fragment should not be persisted.
+        """
+
         self.source = source
+        self.ephemeral = ephemeral
 
     def id(self):
         return hashlib.sha256(self.encode("utf-8")).hexdigest()
