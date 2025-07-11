@@ -806,6 +806,8 @@ class _BaseResponse:
             for fragment in (previous_response.prompt.fragments or []) + (
                 previous_response.prompt.system_fragments or []
             ):
+                if getattr(fragment, "ephemeral", False):
+                    continue
                 fragment_id = ensure_fragment(db, fragment)
                 replacements[f"f:{fragment_id}"] = fragment
                 replacements[f"r:{previous_response.id}"] = (
@@ -813,6 +815,8 @@ class _BaseResponse:
                 )
 
         for i, fragment in enumerate(self.prompt.fragments):
+            if getattr(fragment, "ephemeral", False):
+                continue
             fragment_id = ensure_fragment(db, fragment)
             replacements[f"f{fragment_id}"] = fragment
             db["prompt_fragments"].insert(
@@ -823,6 +827,8 @@ class _BaseResponse:
                 },
             )
         for i, fragment in enumerate(self.prompt.system_fragments):
+            if getattr(fragment, "ephemeral", False):
+                continue
             fragment_id = ensure_fragment(db, fragment)
             replacements[f"f{fragment_id}"] = fragment
             db["system_fragments"].insert(

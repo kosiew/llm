@@ -50,6 +50,7 @@ Hopefully the last alpha before a stable release that includes tool support.
 * New `--pre` option for `llm install` to allow installing pre-release packages. ([#1060](https://github.com/simonw/llm/issues/1060))
 * OpenAI models (`gpt-4o`, `gpt-4o-mini`) now explicitly declare support for tools and vision. ([#1037](https://github.com/simonw/llm/issues/1037))
 * The `supports_tools` parameter is now supported in `extra-openai-models.yaml`. Thanks, [Mahesh Hegde ](https://github.com/mahesh-hegde). ([#1068](https://github.com/simonw/llm/issues/1068))
+* New `-ef/--ephemeral-fragment` option adds a fragment to a prompt without storing it in the database.
 
 ### Bug fixes
 

@@ -27,6 +27,10 @@ Here we are specifying a fragment using a URL. The contents of that URL will be 
 
 The `-f` option can be used multiple times to combine together multiple fragments.
 
+If you want to include a fragment without storing it in the database, use
+`-ef/--ephemeral-fragment` instead. This works just like `-f` but the fragment
+is discarded once the prompt finishes executing.
+
 Fragments can also be files on disk, for example:
 ```bash
 llm -f setup.py 'extract the metadata'

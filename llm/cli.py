@@ -428,6 +428,13 @@ def cli():
     help="Fragment (alias, URL, hash or file path) to add to the prompt",
 )
 @click.option(
+    "ephemeral_fragments",
+    "-ef",
+    "--ephemeral-fragment",
+    multiple=True,
+    help="Fragment to add to the prompt without storing it",
+)
+@click.option(
     "system_fragments",
     "--sf",
     "--system-fragment",
@@ -488,6 +495,7 @@ def prompt(
     schema_input,
     schema_multi,
     fragments,
+    ephemeral_fragments,
     system_fragments,
     template,
     param,
@@ -805,6 +813,16 @@ def prompt(
             for attachment in fragments_and_attachments
             if isinstance(attachment, Attachment)
         )
+        if ephemeral_fragments:
+            ephemeral_resolved = resolve_fragments(
+                db, ephemeral_fragments, allow_attachments=True
+            )
+            for item in ephemeral_resolved:
+                if isinstance(item, Fragment):
+                    item.ephemeral = True
+                    resolved_fragments.append(item)
+                elif isinstance(item, Attachment):
+                    resolved_attachments.append(item)
         resolved_system_fragments = resolve_fragments(db, system_fragments)
     except FragmentNotFound as ex:
         raise click.ClickException(str(ex))
@@ -942,6 +960,13 @@ def prompt(
     help="Fragment (alias, URL, hash or file path) to add to the prompt",
 )
 @click.option(
+    "ephemeral_fragments",
+    "-ef",
+    "--ephemeral-fragment",
+    multiple=True,
+    help="Fragment to add to the prompt without storing it",
+)
+@click.option(
     "system_fragments",
     "--sf",
     "--system-fragment",
@@ -1014,6 +1039,7 @@ def chat(
     _continue,
     conversation_id,
     fragments,
+    ephemeral_fragments,
     system_fragments,
     template,
     param,
@@ -1131,6 +1157,16 @@ def chat(
             for attachment in fragments_and_attachments
             if isinstance(attachment, Attachment)
         ]
+        if ephemeral_fragments:
+            ephemeral_resolved = resolve_fragments(
+                db, ephemeral_fragments, allow_attachments=True
+            )
+            for item in ephemeral_resolved:
+                if isinstance(item, Fragment):
+                    item.ephemeral = True
+                    argument_fragments.append(item)
+                elif isinstance(item, Attachment):
+                    argument_attachments.append(item)
         argument_system_fragments = resolve_fragments(db, system_fragments)
     except FragmentNotFound as ex:
         raise click.ClickException(str(ex))
@@ -1154,7 +1190,8 @@ def chat(
         attachments = []
         if argument_fragments:
             fragments += argument_fragments
-            # fragments from --fragments will get added to the first message only
+            # fragments from --fragment or --ephemeral-fragment are
+            # added to the first message only
             argument_fragments = []
         if argument_attachments:
             attachments = argument_attachments
