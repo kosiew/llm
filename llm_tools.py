@@ -11,7 +11,9 @@ def delete_all_fragments():
 
     try:
         # Delete all rows in the fragments table
-        db["fragments"].delete_where()
+        with db.conn:
+            deleted_count = db["fragments"].delete_where("1=1")
+        click.echo(f"Deleted {deleted_count} rows from fragments table.")
 
         # Delete orphan rows in fragment_aliases table
         db["fragment_aliases"].delete_where("fragment_id NOT IN (SELECT id FROM fragments)")
@@ -33,3 +35,6 @@ def cli():
     pass
 
 cli.add_command(delete_all_fragments)
+
+if __name__ == "__main__":
+    cli()
