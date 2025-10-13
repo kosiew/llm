@@ -18,6 +18,9 @@ from pydantic import field_validator, Field
 from typing import AsyncGenerator, List, Iterable, Iterator, Optional, Union
 import json
 import yaml
+import subprocess
+import shutil
+import sys
 
 
 @hookimpl
@@ -676,12 +679,20 @@ class Chat(_Shared, KeyModel):
         client = self.get_client(key)
         usage = None
         if stream:
-            completion = client.chat.completions.create(
-                model=self.model_name or self.model_id,
-                messages=messages,
-                stream=True,
-                **kwargs,
-            )
+            try:
+                completion = client.chat.completions.create(
+                    model=self.model_name or self.model_id,
+                    messages=messages,
+                    stream=True,
+                    **kwargs,
+                )
+            except Exception as ex:
+                # Detect token limit / request too large errors and persist payload
+                text = json.dumps({"model": self.model_name or self.model_id, "messages": messages}, indent=2)
+                ex_str = str(ex)
+                if "tokens_limit_reached" in ex_str or "Request body too large" in ex_str or "413" in ex_str:
+                    _copy_to_clipboard_if_available(text, filename_hint="llm_payload_messages.json")
+                raise
             chunks = []
             tool_calls = {}
             for chunk in completion:
@@ -714,13 +725,21 @@ class Chat(_Shared, KeyModel):
                             arguments=json.loads(value.function.arguments),
                         )
                     )
+            
         else:
-            completion = client.chat.completions.create(
-                model=self.model_name or self.model_id,
-                messages=messages,
-                stream=False,
-                **kwargs,
-            )
+            try:
+                completion = client.chat.completions.create(
+                    model=self.model_name or self.model_id,
+                    messages=messages,
+                    stream=False,
+                    **kwargs,
+                )
+            except Exception as ex:
+                text = json.dumps({"model": self.model_name or self.model_id, "messages": messages}, indent=2)
+                ex_str = str(ex)
+                if "tokens_limit_reached" in ex_str or "Request body too large" in ex_str or "413" in ex_str:
+                    _copy_to_clipboard_if_available(text, filename_hint="llm_payload_messages.json")
+                raise
             usage = completion.usage.model_dump()
             response.response_json = remove_dict_none_values(completion.model_dump())
             for tool_call in completion.choices[0].message.tool_calls or []:
@@ -735,6 +754,29 @@ class Chat(_Shared, KeyModel):
                 yield completion.choices[0].message.content
         self.set_usage(response, usage)
         response._prompt_json = redact_data({"messages": messages})
+
+
+def _copy_to_clipboard_if_available(text: str, filename_hint: str = "payload.txt"):
+    """Copy text to system clipboard if possible. On macOS use pbcopy.
+
+    Also write to a temporary file in the current working directory as a fallback
+    so users can retrieve the payload if clipboard isn't available.
+    """
+    try:
+        if sys.platform == "darwin" and shutil.which("pbcopy"):
+            p = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE)
+            p.communicate(text.encode("utf-8"))
+            return True
+    except Exception:
+        pass
+    # Fallback: write to file
+    try:
+        path = filename_hint
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        return True
+    except Exception:
+        return False
 
 
 class AsyncChat(_Shared, AsyncKeyModel):
@@ -758,12 +800,19 @@ class AsyncChat(_Shared, AsyncKeyModel):
         client = self.get_client(key, async_=True)
         usage = None
         if stream:
-            completion = await client.chat.completions.create(
-                model=self.model_name or self.model_id,
-                messages=messages,
-                stream=True,
-                **kwargs,
-            )
+            try:
+                completion = await client.chat.completions.create(
+                    model=self.model_name or self.model_id,
+                    messages=messages,
+                    stream=True,
+                    **kwargs,
+                )
+            except Exception as ex:
+                text = json.dumps({"model": self.model_name or self.model_id, "messages": messages}, indent=2)
+                ex_str = str(ex)
+                if "tokens_limit_reached" in ex_str or "Request body too large" in ex_str or "413" in ex_str:
+                    _copy_to_clipboard_if_available(text, filename_hint="llm_payload_messages_async.json")
+                raise
             chunks = []
             tool_calls = {}
             async for chunk in completion:
@@ -799,12 +848,19 @@ class AsyncChat(_Shared, AsyncKeyModel):
                     )
             response.response_json = remove_dict_none_values(combine_chunks(chunks))
         else:
-            completion = await client.chat.completions.create(
-                model=self.model_name or self.model_id,
-                messages=messages,
-                stream=False,
-                **kwargs,
-            )
+            try:
+                completion = await client.chat.completions.create(
+                    model=self.model_name or self.model_id,
+                    messages=messages,
+                    stream=False,
+                    **kwargs,
+                )
+            except Exception as ex:
+                text = json.dumps({"model": self.model_name or self.model_id, "messages": messages}, indent=2)
+                ex_str = str(ex)
+                if "tokens_limit_reached" in ex_str or "Request body too large" in ex_str or "413" in ex_str:
+                    _copy_to_clipboard_if_available(text, filename_hint="llm_payload_messages_async.json")
+                raise
             response.response_json = remove_dict_none_values(completion.model_dump())
             usage = completion.usage.model_dump()
             for tool_call in completion.choices[0].message.tool_calls or []:
@@ -850,12 +906,19 @@ class Completion(Chat):
         kwargs = self.build_kwargs(prompt, stream)
         client = self.get_client(key)
         if stream:
-            completion = client.completions.create(
-                model=self.model_name or self.model_id,
-                prompt="\n".join(messages),
-                stream=True,
-                **kwargs,
-            )
+            try:
+                completion = client.completions.create(
+                    model=self.model_name or self.model_id,
+                    prompt="\n".join(messages),
+                    stream=True,
+                    **kwargs,
+                )
+            except Exception as ex:
+                text = json.dumps({"model": self.model_name or self.model_id, "prompt": "\n".join(messages)}, indent=2)
+                ex_str = str(ex)
+                if "tokens_limit_reached" in ex_str or "Request body too large" in ex_str or "413" in ex_str:
+                    _copy_to_clipboard_if_available(text, filename_hint="llm_payload_prompt.json")
+                raise
             chunks = []
             for chunk in completion:
                 chunks.append(chunk)
@@ -869,12 +932,19 @@ class Completion(Chat):
             cleaned = remove_dict_none_values(combined)
             response.response_json = cleaned
         else:
-            completion = client.completions.create(
-                model=self.model_name or self.model_id,
-                prompt="\n".join(messages),
-                stream=False,
-                **kwargs,
-            )
+            try:
+                completion = client.completions.create(
+                    model=self.model_name or self.model_id,
+                    prompt="\n".join(messages),
+                    stream=False,
+                    **kwargs,
+                )
+            except Exception as ex:
+                text = json.dumps({"model": self.model_name or self.model_id, "prompt": "\n".join(messages)}, indent=2)
+                ex_str = str(ex)
+                if "tokens_limit_reached" in ex_str or "Request body too large" in ex_str or "413" in ex_str:
+                    _copy_to_clipboard_if_available(text, filename_hint="llm_payload_prompt.json")
+                raise
             response.response_json = remove_dict_none_values(completion.model_dump())
             yield completion.choices[0].text
         response._prompt_json = redact_data({"messages": messages})
