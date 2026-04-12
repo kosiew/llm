@@ -2,6 +2,7 @@ import asyncio
 import click
 from click_default_group import DefaultGroup
 from dataclasses import asdict
+from importlib.metadata import version
 import io
 import json
 import os
@@ -121,7 +122,11 @@ def resolve_fragments(
     resolved: List[Union[Fragment, Attachment]] = []
     for fragment in fragments:
         if fragment.startswith("http://") or fragment.startswith("https://"):
-            client = httpx.Client(follow_redirects=True, max_redirects=3)
+            llm_version = version("llm")
+            headers = {"User-Agent": f"llm/{llm_version} (https://llm.datasette.io/)"}
+            client = httpx.Client(
+                follow_redirects=True, max_redirects=3, headers=headers
+            )
             response = client.get(fragment)
             response.raise_for_status()
             resolved.append(Fragment(response.text, fragment))
@@ -567,8 +572,6 @@ def prompt(
         # Convert that schema into multiple "items" of the same schema
         schema = multi_schema(schema)
 
-    model_aliases = get_model_aliases()
-
     def read_prompt():
         nonlocal prompt, schema
 
@@ -614,6 +617,7 @@ def prompt(
         path = template_dir() / f"{save}.yaml"
         to_save = {}
         if model_id:
+            model_aliases = get_model_aliases()
             try:
                 to_save["model"] = model_aliases[model_id].model_id
             except KeyError:
@@ -654,15 +658,17 @@ def prompt(
             # Need to validate and convert their types first
             model = get_model(model_id or get_default_model())
             try:
-                to_save["options"] = dict(
-                    (key, value)
-                    for key, value in model.Options(**dict(options))
-                    if value is not None
-                )
+                options_model = model.Options(**dict(options))
+                # Use model_dump(mode="json") so Enums become their .value strings
+                to_save["options"] = {
+                    k: v
+                    for k, v in options_model.model_dump(mode="json").items()
+                    if v is not None
+                }
             except pydantic.ValidationError as ex:
                 raise click.ClickException(render_errors(ex.errors()))
         path.write_text(
-            yaml.dump(
+            yaml.safe_dump(
                 to_save,
                 indent=4,
                 default_flow_style=False,
@@ -679,8 +685,9 @@ def prompt(
             template_obj = load_template(template)
         except LoadTemplateError as ex:
             raise click.ClickException(str(ex))
-        extract = template_obj.extract
-        extract_last = template_obj.extract_last
+        if not (extract or extract_last):
+            extract = template_obj.extract
+            extract_last = template_obj.extract_last
         # Combine with template fragments/system_fragments
         if template_obj.fragments:
             fragments = [*template_obj.fragments, *fragments]
@@ -785,7 +792,7 @@ def prompt(
         if key_ not in validated_options:
             validated_options[key_] = value
 
-    kwargs = {**validated_options}
+    kwargs = {}
 
     resolved_attachments = [*attachments, *attachment_types]
 
@@ -835,12 +842,16 @@ def prompt(
 
     if tool_implementations:
         prompt_method = conversation.chain
+        kwargs["options"] = validated_options
         kwargs["chain_limit"] = chain_limit
         if tools_debug:
             kwargs["after_call"] = _debug_tool_call
         if tools_approve:
             kwargs["before_call"] = _approve_tool_call
         kwargs["tools"] = tool_implementations
+    else:
+        # Merge in options for the .prompt() methods
+        kwargs.update(validated_options)
 
     try:
         if async_:
@@ -1088,6 +1099,10 @@ def chat(
             raise click.ClickException(str(ex))
         if model_id is None and template_obj.model:
             model_id = template_obj.model
+        if template_obj.tools:
+            tools = [*template_obj.tools, *tools]
+        if template_obj.functions and template_obj._functions_is_trusted:
+            python_tools = [template_obj.functions, *python_tools]
 
     # Figure out which model we are using
     if model_id is None:
@@ -1228,33 +1243,34 @@ def chat(
                 continue
         if template_obj:
             try:
-                template_prompt, template_system = template_obj.evaluate(prompt, params)
+                # Mirror prompt() logic: only pass input if template uses it
+                uses_input = "input" in template_obj.vars()
+                input_ = prompt if uses_input else ""
+                template_prompt, template_system = template_obj.evaluate(input_, params)
             except Template.MissingVariables as ex:
                 raise click.ClickException(str(ex))
             if template_system and not system:
                 system = template_system
             if template_prompt:
-                new_prompt = template_prompt
-                if prompt:
-                    new_prompt += "\n" + prompt
-                prompt = new_prompt
+                if prompt and not uses_input:
+                    prompt = f"{template_prompt}\n{prompt}"
+                else:
+                    prompt = template_prompt
         if prompt.strip() in ("exit", "quit"):
             break
 
         response = conversation.chain(
             prompt,
-            fragments=[str(fragment) for fragment in fragments],
-            system_fragments=[
-                str(system_fragment) for system_fragment in argument_system_fragments
-            ],
+            fragments=fragments,
+            system_fragments=argument_system_fragments,
             attachments=attachments,
             system=system,
             **kwargs,
         )
 
-        # System prompt only sent for the first message:
+        # System prompt and system fragments only sent for the first message
         system = None
-        system_fragments = []
+        argument_system_fragments = []
         for chunk in response:
             print(chunk, end="")
             sys.stdout.flush()
@@ -1743,16 +1759,14 @@ def logs_list(
 
     if any_tools:
         # Any response that involved at least one tool result
-        where_bits.append(
-            """
+        where_bits.append("""
             exists (
               select 1
                 from tool_results
               where
                 tool_results.response_id = responses.id
             )
-        """
-        )
+        """)
     if tools:
         tools_by_name = get_tools()
         # Filter responses by tools (must have ALL of the named tools, including plugin)
@@ -1763,8 +1777,7 @@ def logs_list(
             except KeyError:
                 raise click.ClickException(f"Unknown tool: {tool_name}")
 
-            tool_clauses.append(
-                f"""
+            tool_clauses.append(f"""
             exists (
               select 1
                 from tool_results
@@ -1773,8 +1786,7 @@ def logs_list(
                  and tools.name = :tool{i}
                  and tools.plugin = :plugin{i}
             )
-            """
-            )
+            """)
             sql_params[f"tool{i}"] = tool_name
             sql_params[f"plugin{i}"] = plugin_name
 
@@ -2104,6 +2116,15 @@ def logs_list(
                 should_show_conversation = False
             click.echo("## Prompt\n\n{}".format(row["prompt"] or "-- none --"))
             _display_fragments(row["prompt_fragments"], "Prompt fragments")
+            if row["options_json"]:
+                options = row["options_json"]
+                if isinstance(options, str):
+                    options = json.loads(options)
+                if options:
+                    options_text = "\n".join(
+                        "- {}: {}".format(key, value) for key, value in options.items()
+                    )
+                    click.echo("\n## Options\n\n{}".format(options_text))
             if row["system"] != current_system:
                 if row["system"] is not None:
                     click.echo("\n## System\n\n{}".format(row["system"]))
@@ -2495,9 +2516,7 @@ def schemas_list(path, database, queries, full, json_, nl):
       on responses.schema_id = schemas.id
     {} group by responses.schema_id
     order by recently_used
-    """.format(
-        where_sql
-    )
+    """.format(where_sql)
     rows = db.query(sql, params)
 
     if json_ or nl:
@@ -2586,6 +2605,7 @@ def tools():
 
 
 @tools.command(name="list")
+@click.argument("tool_defs", nargs=-1)
 @click.option("json_", "--json", is_flag=True, help="Output as JSON")
 @click.option(
     "python_tools",
@@ -2593,13 +2613,35 @@ def tools():
     help="Python code block or file path defining functions to register as tools",
     multiple=True,
 )
-def tools_list(json_, python_tools):
+def tools_list(tool_defs, json_, python_tools):
     "List available tools that have been provided by plugins"
-    tools = get_tools()
-    if python_tools:
-        for code_or_path in python_tools:
-            for tool in _tools_from_code(code_or_path):
+
+    def introspect_tools(toolbox_class):
+        methods = []
+        for tool in toolbox_class.method_tools():
+            methods.append(
+                {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "arguments": tool.input_schema,
+                    "implementation": tool.implementation,
+                }
+            )
+        return methods
+
+    if tool_defs:
+        tools = {}
+        for tool in _gather_tools(tool_defs, python_tools):
+            if hasattr(tool, "name"):
                 tools[tool.name] = tool
+            else:
+                tools[tool.__class__.__name__] = tool
+    else:
+        tools = get_tools()
+        if python_tools:
+            for code_or_path in python_tools:
+                for tool in _tools_from_code(code_or_path):
+                    tools[tool.name] = tool
 
     output_tools = []
     output_toolboxes = []
@@ -2623,11 +2665,11 @@ def tools_list(json_, python_tools):
                     "name": name,
                     "tools": [
                         {
-                            "name": method["name"],
-                            "description": method["description"],
-                            "arguments": method["arguments"],
+                            "name": tool["name"],
+                            "description": tool["description"],
+                            "arguments": tool["arguments"],
                         }
-                        for method in tool.introspect_methods()
+                        for tool in introspect_tools(tool)
                     ],
                 }
             )
@@ -2654,22 +2696,20 @@ def tools_list(json_, python_tools):
                 click.echo(textwrap.indent(tool.description.strip(), "  ") + "\n")
         for toolbox in toolbox_objects:
             click.echo(toolbox.name + ":\n")
-            for method in toolbox.introspect_methods():
+            for tool in toolbox.method_tools():
                 sig = (
-                    str(inspect.signature(method["implementation"]))
+                    str(inspect.signature(tool.implementation))
                     .replace("(self, ", "(")
                     .replace("(self)", "()")
                 )
                 click.echo(
                     "  {}{}\n".format(
-                        method["name"],
+                        tool.name,
                         sig,
                     )
                 )
-                if method["description"]:
-                    click.echo(
-                        textwrap.indent(method["description"].strip(), "    ") + "\n"
-                    )
+                if tool.description:
+                    click.echo(textwrap.indent(tool.description.strip(), "    ") + "\n")
 
 
 @cli.group(
@@ -2815,13 +2855,11 @@ def fragments_list(queries, aliases, json_):
         param_count += 1
         p = f"p{param_count}"
         params[p] = q
-        where_bits.append(
-            f"""
+        where_bits.append(f"""
             (fragments.hash = :{p} or fragment_aliases.alias = :{p}
             or fragments.source like '%' || :{p} || '%'
             or fragments.content like '%' || :{p} || '%')
-        """
-        )
+        """)
     where = "\n      and\n  ".join(where_bits)
     if where:
         where = " where " + where
@@ -2843,9 +2881,7 @@ def fragments_list(queries, aliases, json_):
     group by
         fragments.id, fragments.hash, fragments.content, fragments.datetime_utc, fragments.source
     order by fragments.datetime_utc
-    """.format(
-        where=where
-    )
+    """.format(where=where)
     results = list(db.query(sql, params))
     for result in results:
         result["aliases"] = json.loads(result["aliases"])
@@ -3535,8 +3571,7 @@ def embed_db_collections(database, json_):
     db = sqlite_utils.Database(str(database))
     if not db["collections"].exists():
         raise click.ClickException("No collections table found in {}".format(database))
-    rows = db.query(
-        """
+    rows = db.query("""
     select
         collections.name,
         collections.model,
@@ -3546,8 +3581,7 @@ def embed_db_collections(database, json_):
         on collections.id = embeddings.collection_id
     group by
         collections.name, collections.model
-    """
-    )
+    """)
     if json_:
         click.echo(json.dumps(list(rows), indent=4))
     else:
@@ -4029,26 +4063,11 @@ def _gather_tools(
         tool for tool in tool_specs if tool.split("(")[0] not in registered_tools
     ]
     if bad_tools:
-        # Are any of them toolbox tools?
-        bad_tool_classes = list(
-            set(
-                bad_tool.split("_")[0]
-                for bad_tool in bad_tools
-                if bad_tool[0].isupper()
+        raise click.ClickException(
+            "Tool(s) {} not found. Available tools: {}".format(
+                ", ".join(bad_tools), ", ".join(registered_tools.keys())
             )
         )
-        if bad_tool_classes:
-            raise click.ClickException(
-                "Toolbox tools ({}) are not yet supported with llm -c".format(
-                    ", ".join(bad_tool_classes)
-                )
-            )
-        else:
-            raise click.ClickException(
-                "Tool(s) {} not found. Available tools: {}".format(
-                    ", ".join(bad_tools), ", ".join(registered_tools.keys())
-                )
-            )
     for tool_spec in tool_specs:
         if not tool_spec[0].isupper():
             # It's a function

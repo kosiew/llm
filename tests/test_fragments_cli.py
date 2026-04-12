@@ -1,5 +1,8 @@
 from click.testing import CliRunner
+from importlib.metadata import version
 from llm.cli import cli
+from unittest import mock
+import os
 import yaml
 import sqlite_utils
 import textwrap
@@ -8,7 +11,8 @@ import textwrap
 def test_fragments_set_show_remove(user_path):
     runner = CliRunner()
     with runner.isolated_filesystem():
-        open("fragment1.txt", "w").write("Hello fragment 1")
+        with open("fragment1.txt", "w") as f:
+            f.write("Hello fragment 1")
 
         # llm fragments --aliases should return nothing
         assert runner.invoke(cli, ["fragments", "list", "--aliases"]).output == ""
@@ -67,7 +71,8 @@ def test_fragments_list(user_path):
     runner = CliRunner()
     with runner.isolated_filesystem():
         # This is just to create the database schema
-        open("fragment1.txt", "w").write("1")
+        with open("fragment1.txt", "w") as f:
+            f.write("1")
         assert (
             runner.invoke(cli, ["fragments", "set", "f1", "fragment1.txt"]).exit_code
             == 0
@@ -101,9 +106,7 @@ def test_fragments_list(user_path):
         )
         result = runner.invoke(cli, ["fragments", "list"])
         assert result.exit_code == 0
-        assert result.output.strip() == (
-            textwrap.dedent(
-                """
+        assert result.output.strip() == (textwrap.dedent("""
                 - hash: hash2
                   aliases: []
                   datetime_utc: '2022-10-01T00:00:00Z'
@@ -120,6 +123,22 @@ def test_fragments_list(user_path):
                   datetime_utc: '2024-10-01T00:00:00Z'
                   source: file3.txt
                   content: '3'
-                """
-            ).strip()
-        )
+                """).strip())
+
+
+@mock.patch.dict(os.environ, {"OPENAI_API_KEY": "X"})
+def test_fragment_url_user_agent(mocked_openai_chat, user_path):
+    mocked_openai_chat.add_response(
+        url="https://example.com/fragment.txt",
+        text="Hello from URL",
+    )
+    runner = CliRunner()
+    result = runner.invoke(cli, ["prompt", "-f", "https://example.com/fragment.txt"])
+    assert result.exit_code == 0
+
+    # Verify the User-Agent header was sent for the fragment URL request
+    requests = mocked_openai_chat.get_requests()
+    fragment_request = [r for r in requests if "example.com" in str(r.url)][0]
+    llm_version = version("llm")
+    expected_user_agent = f"llm/{llm_version} (https://llm.datasette.io/)"
+    assert fragment_request.headers["User-Agent"] == expected_user_agent

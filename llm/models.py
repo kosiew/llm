@@ -7,8 +7,10 @@ from .errors import NeedsKeyException
 import hashlib
 import httpx
 from itertools import islice
+from pathlib import Path
 import re
 import time
+from types import MethodType
 from typing import (
     Any,
     AsyncGenerator,
@@ -32,6 +34,7 @@ from .utils import (
     mimetype_from_string,
     token_usage_string,
     monotonic_ulid,
+    Fragment,
 )
 from abc import ABC, abstractmethod
 import inspect
@@ -43,6 +46,8 @@ CONVERSATION_NAME_LENGTH = 32
 
 @dataclass
 class Usage:
+    "Token usage information from a model response."
+
     input: Optional[int] = None
     output: Optional[int] = None
     details: Optional[Dict[str, Any]] = None
@@ -50,6 +55,8 @@ class Usage:
 
 @dataclass
 class Attachment:
+    "An attachment (image, audio, etc) to include with a prompt."
+
     type: Optional[str] = None
     path: Optional[str] = None
     url: Optional[str] = None
@@ -62,7 +69,7 @@ class Attachment:
             if self.content:
                 self._id = hashlib.sha256(self.content).hexdigest()
             elif self.path:
-                self._id = hashlib.sha256(open(self.path, "rb").read()).hexdigest()
+                self._id = hashlib.sha256(Path(self.path).read_bytes()).hexdigest()
             else:
                 self._id = hashlib.sha256(
                     json.dumps({"url": self.url}).encode("utf-8")
@@ -70,6 +77,7 @@ class Attachment:
         return self._id
 
     def resolve_type(self):
+        "Return the content type, guessing from content if not specified."
         if self.type:
             return self.type
         # Derive it from path or url or content
@@ -84,10 +92,11 @@ class Attachment:
         raise ValueError("Attachment has no type and no content to derive it from")
 
     def content_bytes(self):
+        "Return the binary content, reading from path or URL if needed."
         content = self.content
         if not content:
             if self.path:
-                content = open(self.path, "rb").read()
+                content = Path(self.path).read_bytes()
             elif self.url:
                 response = httpx.get(self.url)
                 response.raise_for_status()
@@ -95,6 +104,7 @@ class Attachment:
         return content
 
     def base64_content(self):
+        "Return the content as a base64-encoded string."
         return base64.b64encode(self.content_bytes()).decode("utf-8")
 
     def __repr__(self):
@@ -122,6 +132,8 @@ class Attachment:
 
 @dataclass
 class Tool:
+    "A tool that can be called by a model."
+
     name: str
     description: Optional[str] = None
     input_schema: Dict = field(default_factory=dict)
@@ -144,7 +156,7 @@ class Tool:
         return hashlib.sha256(json.dumps(to_hash).encode("utf-8")).hexdigest()
 
     @classmethod
-    def function(cls, function, name=None):
+    def function(cls, function, name=None, description=None):
         """
         Turn a Python function into a Tool object by:
          - Extracting the function name
@@ -159,7 +171,7 @@ class Tool:
 
         return cls(
             name=name or function.__name__,
-            description=function.__doc__ or None,
+            description=description or function.__doc__ or None,
             input_schema=_get_arguments_input_schema(function, name),
             implementation=function,
         )
@@ -185,9 +197,20 @@ def _get_arguments_input_schema(function, name):
 
 
 class Toolbox:
-    _blocked = ("method_tools", "introspect_methods", "methods")
     name: Optional[str] = None
     instance_id: Optional[int] = None
+    _blocked = (
+        "tools",
+        "add_tool",
+        "method_tools",
+        "__init_subclass__",
+        "prepare",
+        "prepare_async",
+    )
+    _extra_tools: List[Tool] = []
+    _config: Dict[str, Any] = {}
+    _prepared: bool = False
+    _async_prepared: bool = False
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -208,59 +231,75 @@ class Toolbox:
                 and sig.parameters[name].kind
                 not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
             }
+            self._extra_tools = []
 
             original_init(self, *args, **kwargs)
 
         cls.__init__ = wrapped_init
 
     @classmethod
-    def methods(cls):
-        gathered = []
-        for name in dir(cls):
-            if name.startswith("_"):
+    def method_tools(cls) -> List[Tool]:
+        tools = []
+        for method_name in dir(cls):
+            if method_name.startswith("_") or method_name in cls._blocked:
                 continue
-            if name in cls._blocked:
-                continue
-            method = getattr(cls, name)
+            method = getattr(cls, method_name)
             if callable(method):
-                gathered.append(method)
-        return gathered
-
-    def method_tools(self):
-        "Returns a list of llm.Tool() for each method"
-        for method_name in dir(self):
-            if method_name.startswith("_") or method_name in self._blocked:
-                continue
-            method = getattr(self, method_name)
-            # The attribute must be a bound method, i.e. inspect.ismethod()
-            if callable(method) and inspect.ismethod(method):
                 tool = Tool.function(
                     method,
-                    name="{}_{}".format(self.__class__.__name__, method_name),
+                    name="{}_{}".format(cls.__name__, method_name),
                 )
+                tools.append(tool)
+        return tools
+
+    def tools(self) -> Iterable[Tool]:
+        "Returns an llm.Tool() for each class method, plus any extras registered with add_tool()"
+        # method_tools() returns unbound methods, we need bound methods here:
+        for name in dir(self):
+            if name.startswith("_") or name in self._blocked:
+                continue
+            attr = getattr(self, name)
+            if callable(attr):
+                tool = Tool.function(attr, name=f"{self.__class__.__name__}_{name}")
                 tool.plugin = getattr(self, "plugin", None)
                 yield tool
+        yield from self._extra_tools
 
-    @classmethod
-    def introspect_methods(cls):
-        methods = []
-        for method in cls.methods():
-            arguments = _get_arguments_input_schema(method, method.__name__)
-            methods.append(
-                {
-                    "name": method.__name__,
-                    "description": (
-                        method.__doc__.strip() if method.__doc__ is not None else None
-                    ),
-                    "arguments": _ensure_dict_schema(arguments),
-                    "implementation": method,
-                }
-            )
-        return methods
+    def add_tool(
+        self, tool_or_function: Union[Tool, Callable[..., Any]], pass_self: bool = False
+    ):
+        "Add a tool to this toolbox"
+
+        def _upgrade(fn):
+            if pass_self:
+                return MethodType(fn, self)
+            return fn
+
+        if isinstance(tool_or_function, Tool):
+            self._extra_tools.append(tool_or_function)
+        elif callable(tool_or_function):
+            self._extra_tools.append(Tool.function(_upgrade(tool_or_function)))
+        else:
+            raise ValueError("Tool must be an instance of Tool or a callable function")
+
+    def prepare(self):
+        """
+        Over-ride this to perform setup (and .add_tool() calls) before the toolbox is used.
+        Implement a similar prepare_async() method for async setup.
+        """
+        pass
+
+    async def prepare_async(self):
+        """
+        Over-ride this to perform async setup (and .add_tool() calls) before the toolbox is used.
+        """
+        pass
 
 
 @dataclass
 class ToolCall:
+    "A request by the model to call a tool."
+
     name: str
     arguments: dict
     tool_call_id: Optional[str] = None
@@ -268,6 +307,8 @@ class ToolCall:
 
 @dataclass
 class ToolResult:
+    "The result of executing a tool call."
+
     name: str
     output: str
     attachments: List[Attachment] = field(default_factory=list)
@@ -297,12 +338,14 @@ class CancelToolCall(Exception):
 
 @dataclass
 class Prompt:
+    "The prompt being sent to the model."
+
     _prompt: Optional[str]
     model: "Model"
-    fragments: Optional[List[str]]
+    fragments: Optional[List[Union[str, Fragment]]]
     attachments: Optional[List[Attachment]]
     _system: Optional[str]
-    system_fragments: Optional[List[str]]
+    system_fragments: Optional[List[Union[str, Fragment]]]
     prompt_json: Optional[str]
     schema: Optional[Union[Dict, type[BaseModel]]]
     tools: List[Tool]
@@ -340,10 +383,12 @@ class Prompt:
 
     @property
     def prompt(self):
+        "The text of the prompt, with any fragments concatenated."
         return "\n".join(self.fragments + ([self._prompt] if self._prompt else []))
 
     @property
     def system(self):
+        "The system prompt, with any system fragments concatenated."
         bits = [
             bit.strip()
             for bit in (self.system_fragments + [self._system or ""])
@@ -358,7 +403,7 @@ def _wrap_tools(tools: List[ToolDef]) -> List[Tool]:
         if isinstance(tool, Tool):
             wrapped_tools.append(tool)
         elif isinstance(tool, Toolbox):
-            wrapped_tools.extend(tool.method_tools())
+            wrapped_tools.extend(tool.tools())
         elif callable(tool):
             wrapped_tools.append(Tool.function(tool))
         else:
@@ -390,13 +435,13 @@ class Conversation(_BaseConversation):
         self,
         prompt: Optional[str] = None,
         *,
-        fragments: Optional[List[str]] = None,
+        fragments: Optional[List[Union[str, Fragment]]] = None,
         attachments: Optional[List[Attachment]] = None,
         system: Optional[str] = None,
         schema: Optional[Union[dict, type[BaseModel]]] = None,
         tools: Optional[List[ToolDef]] = None,
         tool_results: Optional[List[ToolResult]] = None,
-        system_fragments: Optional[List[str]] = None,
+        system_fragments: Optional[List[Union[str, Fragment]]] = None,
         stream: bool = True,
         key: Optional[str] = None,
         **options,
@@ -979,10 +1024,13 @@ class _BaseResponse:
 
 
 class Response(_BaseResponse):
+    "Sync response from a model."
+
     model: "Model"
     conversation: Optional["Conversation"] = None
 
     def on_done(self, callback):
+        "Register a callback to be called when the response is complete."
         if not self._done:
             self.done_callbacks.append(callback)
         else:
@@ -1000,6 +1048,7 @@ class Response(_BaseResponse):
             list(self)
 
     def text(self) -> str:
+        "Return the full text of the response, executing the prompt if needed."
         self._force()
         return "".join(self._chunks)
 
@@ -1014,8 +1063,20 @@ class Response(_BaseResponse):
     ) -> List[ToolResult]:
         tool_results = []
         tools_by_name = {tool.name: tool for tool in self.prompt.tools}
+
+        # Run prepare() on all Toolbox instances that need it
+        instances_to_prepare: list[Toolbox] = []
+        for tool_to_prep in tools_by_name.values():
+            inst = _get_instance(tool_to_prep.implementation)
+            if isinstance(inst, Toolbox) and not getattr(inst, "_prepared", False):
+                instances_to_prepare.append(inst)
+
+        for inst in instances_to_prepare:
+            inst.prepare()
+            inst._prepared = True
+
         for tool_call in self.tool_calls():
-            tool = tools_by_name.get(tool_call.name)
+            tool: Optional[Tool] = tools_by_name.get(tool_call.name)
             # Tool could be None if the tool was not found in the prompt tools,
             # but we still call the before_call method:
             if before_call:
@@ -1058,7 +1119,7 @@ class Response(_BaseResponse):
             exception = None
 
             try:
-                if asyncio.iscoroutinefunction(tool.implementation):
+                if inspect.iscoroutinefunction(tool.implementation):
                     result = asyncio.run(tool.implementation(**tool_call.arguments))
                 else:
                     result = tool.implementation(**tool_call.arguments)
@@ -1093,6 +1154,7 @@ class Response(_BaseResponse):
         return tool_results
 
     def tool_calls(self) -> List[ToolCall]:
+        "Return the list of tool calls made during this response."
         self._force()
         return self._tool_calls
 
@@ -1100,6 +1162,7 @@ class Response(_BaseResponse):
         return self.tool_calls()
 
     def json(self) -> Optional[Dict[str, Any]]:
+        "Return the raw JSON response from the model, if available."
         self._force()
         return self.response_json
 
@@ -1112,6 +1175,7 @@ class Response(_BaseResponse):
         return self._start_utcnow.isoformat() if self._start_utcnow else ""
 
     def usage(self) -> Usage:
+        "Return token usage information for this response."
         self._force()
         return Usage(
             input=self.input_tokens,
@@ -1164,6 +1228,8 @@ class Response(_BaseResponse):
 
 
 class AsyncResponse(_BaseResponse):
+    "Async response from a model."
+
     model: "AsyncModel"
     conversation: Optional["AsyncConversation"] = None
 
@@ -1172,6 +1238,7 @@ class AsyncResponse(_BaseResponse):
         return super().from_row(db, row, _async=True)
 
     async def on_done(self, callback):
+        "Register a callback to be called when the response is complete."
         if not self._done:
             self.done_callbacks.append(callback)
         else:
@@ -1201,11 +1268,24 @@ class AsyncResponse(_BaseResponse):
         tool_calls_list = await self.tool_calls()
         tools_by_name = {tool.name: tool for tool in self.prompt.tools}
 
+        # Run async prepare_async() on all Toolbox instances that need it
+        instances_to_prepare: list[Toolbox] = []
+        for tool_to_prep in tools_by_name.values():
+            inst = _get_instance(tool_to_prep.implementation)
+            if isinstance(inst, Toolbox) and not getattr(
+                inst, "_async_prepared", False
+            ):
+                instances_to_prepare.append(inst)
+
+        for inst in instances_to_prepare:
+            await inst.prepare_async()
+            inst._async_prepared = True
+
         indexed_results: List[tuple[int, ToolResult]] = []
         async_tasks: List[asyncio.Task] = []
 
         for idx, tc in enumerate(tool_calls_list):
-            tool = tools_by_name.get(tc.name)
+            tool: Optional[Tool] = tools_by_name.get(tc.name)
             exception: Optional[Exception] = None
 
             if tool is None:
@@ -1396,10 +1476,12 @@ class AsyncResponse(_BaseResponse):
         return "".join(self._chunks)
 
     async def text(self) -> str:
+        "Return the full text of the response, executing the prompt if needed."
         await self._force()
         return "".join(self._chunks)
 
     async def tool_calls(self) -> List[ToolCall]:
+        "Return the list of tool calls made during this response."
         await self._force()
         return self._tool_calls
 
@@ -1409,6 +1491,7 @@ class AsyncResponse(_BaseResponse):
         return self._tool_calls
 
     async def json(self) -> Optional[Dict[str, Any]]:
+        "Return the raw JSON response from the model, if available."
         await self._force()
         return self.response_json
 
@@ -1421,6 +1504,7 @@ class AsyncResponse(_BaseResponse):
         return self._start_utcnow.isoformat() if self._start_utcnow else ""
 
     async def usage(self) -> Usage:
+        "Return token usage information for this response."
         await self._force()
         return Usage(
             input=self.input_tokens,
@@ -1754,10 +1838,10 @@ class _Model(_BaseModel):
         self,
         prompt: Optional[str] = None,
         *,
-        fragments: Optional[List[str]] = None,
+        fragments: Optional[List[Union[str, Fragment]]] = None,
         attachments: Optional[List[Attachment]] = None,
         system: Optional[str] = None,
-        system_fragments: Optional[List[str]] = None,
+        system_fragments: Optional[List[Union[str, Fragment]]] = None,
         stream: bool = True,
         schema: Optional[Union[dict, type[BaseModel]]] = None,
         tools: Optional[List[ToolDef]] = None,
@@ -1863,13 +1947,13 @@ class _AsyncModel(_BaseModel):
         self,
         prompt: Optional[str] = None,
         *,
-        fragments: Optional[List[str]] = None,
+        fragments: Optional[List[Union[str, Fragment]]] = None,
         attachments: Optional[List[Attachment]] = None,
         system: Optional[str] = None,
         schema: Optional[Union[dict, type[BaseModel]]] = None,
         tools: Optional[List[ToolDef]] = None,
         tool_results: Optional[List[ToolResult]] = None,
-        system_fragments: Optional[List[str]] = None,
+        system_fragments: Optional[List[Union[str, Fragment]]] = None,
         stream: bool = True,
         **options,
     ) -> AsyncResponse:
@@ -2019,6 +2103,8 @@ class EmbeddingModel(ABC, _get_key_mixin):
 
 @dataclass
 class ModelWithAliases:
+    "A model with its optional async counterpart and aliases."
+
     model: Model
     async_model: AsyncModel
     aliases: Set[str]

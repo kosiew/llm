@@ -174,8 +174,7 @@ def test_register_fragment_loaders(logs_db, httpx_mock):
             cli.cli, ["-m", "echo", "-f", "mixed:x"], catch_exceptions=False
         )
         assert result3.exit_code == 0
-        result3.output.strip == textwrap.dedent(
-            """\
+        result3.output.strip == textwrap.dedent("""\
             system:
 
 
@@ -184,8 +183,7 @@ def test_register_fragment_loaders(logs_db, httpx_mock):
 
             attachments:
             - https://example.com/attachment.png
-            """
-        ).strip()
+            """).strip()
 
     finally:
         plugins.pm.unregister(name="FragmentLoadersPlugin")
@@ -641,7 +639,7 @@ def test_register_toolbox(tmpdir, logs_db):
                     "name": "Filesystem",
                     "tools": [
                         {
-                            "name": "list_files",
+                            "name": "Filesystem_list_files",
                             "description": None,
                             "arguments": {"properties": {}, "type": "object"},
                         }
@@ -651,7 +649,7 @@ def test_register_toolbox(tmpdir, logs_db):
                     "name": "Memory",
                     "tools": [
                         {
-                            "name": "append",
+                            "name": "Memory_append",
                             "description": "Append something as a key",
                             "arguments": {
                                 "properties": {
@@ -663,7 +661,7 @@ def test_register_toolbox(tmpdir, logs_db):
                             },
                         },
                         {
-                            "name": "get",
+                            "name": "Memory_get",
                             "description": "Get something from a key",
                             "arguments": {
                                 "properties": {"key": {"type": "string"}},
@@ -672,12 +670,12 @@ def test_register_toolbox(tmpdir, logs_db):
                             },
                         },
                         {
-                            "name": "keys",
+                            "name": "Memory_keys",
                             "description": "Return a list of keys",
                             "arguments": {"properties": {}, "type": "object"},
                         },
                         {
-                            "name": "set",
+                            "name": "Memory_set",
                             "description": "Set something as a key",
                             "arguments": {
                                 "properties": {
@@ -702,15 +700,15 @@ def test_register_toolbox(tmpdir, logs_db):
             "llm_version() -> str (plugin: llm.default_plugins.default_tools)\n\n"
             "  Return the installed version of llm\n\n"
             "Filesystem:\n\n"
-            "  list_files()\n\n"
+            "  Filesystem_list_files()\n\n"
             "Memory:\n\n"
-            "  append(key: str, value: str)\n\n"
+            "  Memory_append(key: str, value: str)\n\n"
             "    Append something as a key\n\n"
-            "  get(key: str)\n\n"
+            "  Memory_get(key: str)\n\n"
             "    Get something from a key\n\n"
-            "  keys()\n\n"
+            "  Memory_keys()\n\n"
             "    Return a list of keys\n\n"
-            "  set(key: str, value: str)\n\n"
+            "  Memory_set(key: str, value: str)\n\n"
             "    Set something as a key\n\n"
         )
 
@@ -780,8 +778,8 @@ def test_register_toolbox(tmpdir, logs_db):
         )
         assert result5.exit_code == 1
         assert (
-            result5.output
-            == "Error: Toolbox tools (Filesystem) are not yet supported with llm -c\n"
+            "Error: Tool(s) Filesystem_list_files not found. Available tools:"
+            in result5.output
         )
 
         # Test the logging worked

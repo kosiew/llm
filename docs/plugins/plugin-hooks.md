@@ -28,7 +28,7 @@ def register_commands(cli):
 This new command will be added to `llm --help` and can be run using `llm hello-world`.
 
 (plugin-hooks-register-models)=
-## register_models(register)
+## register_models(register, model_aliases)
 
 This hook can be used to register one or more additional models.
 
@@ -60,7 +60,14 @@ def register_models(register):
 ```
 This demonstrates how to register a model with both sync and async versions, and how to specify an alias for that model.
 
+The `model_aliases` parameter is a list of {class}`~llm.ModelWithAliases` objects representing all models registered so far by other plugins. Plugins that use `@llm.hookimpl(trylast=True)` can use this to inspect or modify models registered by other plugins. Both parameters are optional - plugins can accept just `register`, just `model_aliases`, or both.
+
 The {ref}`model plugin tutorial <tutorial-model-plugin>` describes how to use this hook in detail. Asynchronous models {ref}`are described here <advanced-model-plugins-async>`.
+
+```{eval-rst}
+.. autoclass:: llm.ModelWithAliases
+   :exclude-members: matches
+```
 
 (plugin-hooks-register-embedding-models)=
 ## register_embedding_models(register)
@@ -108,13 +115,13 @@ def register_tools(register):
 
 Tools can also be implemented as classes, as described in {ref}`Toolbox classes <python-api-toolbox>` in the Python API documentation.
 
-You can register classes like the `Memory` example from there by passing the class (_not_ an instance of the class) to `register()`:
+You can register classes like the `Memory` example {ref}`from here <python-api-toolbox>` by passing the class (_not_ an instance of the class) to `register()`:
 
 ```python
 import llm
 
 class Memory(llm.Toolbox):
-    ...
+    # Copy implementation from the Python API documentation
 
 @llm.hookimpl
 def register_tools(register):

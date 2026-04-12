@@ -1,4 +1,14 @@
-from llm import AsyncKeyModel, EmbeddingModel, KeyModel, hookimpl
+from llm import (
+    AsyncConversation,
+    AsyncKeyModel,
+    AsyncResponse,
+    Conversation,
+    EmbeddingModel,
+    KeyModel,
+    Prompt,
+    Response,
+    hookimpl,
+)
 import llm
 from llm.utils import (
     dicts_to_table_string,
@@ -15,7 +25,7 @@ import os
 
 from pydantic import field_validator, Field
 
-from typing import AsyncGenerator, List, Iterable, Iterator, Optional, Union
+from typing import AsyncGenerator, cast, List, Iterable, Iterator, Optional, Union
 import json
 import yaml
 import subprocess
@@ -160,6 +170,98 @@ def register_models(register):
             supports_tools=True,
         ),
     )
+    # GPT-5
+    for model_id in (
+        "gpt-5",
+        "gpt-5-mini",
+        "gpt-5-nano",
+        "gpt-5-2025-08-07",
+        "gpt-5-mini-2025-08-07",
+        "gpt-5-nano-2025-08-07",
+    ):
+        register(
+            Chat(
+                model_id,
+                vision=True,
+                reasoning=True,
+                supports_schema=True,
+                supports_tools=True,
+            ),
+            AsyncChat(
+                model_id,
+                vision=True,
+                reasoning=True,
+                supports_schema=True,
+                supports_tools=True,
+            ),
+        )
+    # GPT-5.1
+    for model_id in (
+        "gpt-5.1",
+        "gpt-5.1-chat-latest",
+    ):
+        register(
+            Chat(
+                model_id,
+                vision=True,
+                reasoning=True,
+                supports_schema=True,
+                supports_tools=True,
+            ),
+            AsyncChat(
+                model_id,
+                vision=True,
+                reasoning=True,
+                supports_schema=True,
+                supports_tools=True,
+            ),
+        )
+    # GPT-5.2
+    for model_id in ("gpt-5.2", "gpt-5.2-chat-latest"):
+        register(
+            Chat(
+                model_id,
+                vision=True,
+                reasoning=True,
+                supports_schema=True,
+                supports_tools=True,
+            ),
+            AsyncChat(
+                model_id,
+                vision=True,
+                reasoning=True,
+                supports_schema=True,
+                supports_tools=True,
+            ),
+        )
+        # "gpt-5.2-pro" is Responses API only
+
+    # GPT-5.4
+    for model_id in (
+        "gpt-5.4",
+        "gpt-5.4-2026-03-05",
+        "gpt-5.4-mini",
+        "gpt-5.4-mini-2026-03-17",
+        "gpt-5.4-nano",
+        "gpt-5.4-nano-2026-03-17",
+    ):
+        register(
+            Chat(
+                model_id,
+                vision=True,
+                reasoning=True,
+                supports_schema=True,
+                supports_tools=True,
+            ),
+            AsyncChat(
+                model_id,
+                vision=True,
+                reasoning=True,
+                supports_schema=True,
+                supports_tools=True,
+            ),
+        )
+
     # The -instruct completion model
     register(
         Completion("gpt-3.5-turbo-instruct", default_max_tokens=256),
@@ -195,10 +297,12 @@ def register_models(register):
             kwargs["audio"] = True
         if extra_model.get("completion"):
             klass = Completion
+            async_klass = None
         else:
             klass = Chat
-        chat_model = klass(
-            model_id,
+            async_klass = AsyncChat
+        model_kwargs = dict(
+            model_id=model_id,
             model_name=model_name,
             api_base=api_base,
             api_type=api_type,
@@ -208,12 +312,19 @@ def register_models(register):
             reasoning=reasoning,
             **kwargs,
         )
+        chat_model = klass(**model_kwargs)
+        async_model = async_klass(**model_kwargs) if async_klass else None
         if api_base:
             chat_model.needs_key = None
+            if async_model:
+                async_model.needs_key = None
         if extra_model.get("api_key_name"):
             chat_model.needs_key = extra_model["api_key_name"]
+            if async_model:
+                async_model.needs_key = extra_model["api_key_name"]
         register(
             chat_model,
+            async_model,
             aliases=aliases,
         )
 
@@ -410,9 +521,12 @@ class SharedOptions(llm.Options):
 
 
 class ReasoningEffortEnum(str, Enum):
+    none = "none"
+    minimal = "minimal"
     low = "low"
     medium = "medium"
     high = "high"
+    xhigh = "xhigh"
 
 
 class OptionsForReasoning(SharedOptions):
@@ -516,7 +630,7 @@ class _Shared:
                 }
             )
 
-    def __str__(self):
+    def __str__(self) -> str:
         return "OpenAI Chat: {}".format(self.model_id)
 
     def build_messages(self, prompt, conversation):
@@ -671,7 +785,14 @@ class Chat(_Shared, KeyModel):
             default=None,
         )
 
-    def execute(self, prompt, stream, response, conversation=None, key=None):
+    def execute(
+        self,
+        prompt: Prompt,
+        stream: bool,
+        response: Response,
+        conversation: Optional[Conversation] = None,
+        key: Optional[str] = None,
+    ) -> Iterator[str]:
         if prompt.system and not self.allows_system_prompt:
             raise NotImplementedError("Model does not support system prompts")
         messages = self.build_messages(prompt, conversation)
@@ -701,12 +822,15 @@ class Chat(_Shared, KeyModel):
                     usage = chunk.usage.model_dump()
                 if chunk.choices and chunk.choices[0].delta:
                     for tool_call in chunk.choices[0].delta.tool_calls or []:
+                        if tool_call.function.arguments is None:
+                            tool_call.function.arguments = ""
                         index = tool_call.index
                         if index not in tool_calls:
                             tool_calls[index] = tool_call
-                        tool_calls[
-                            index
-                        ].function.arguments += tool_call.function.arguments
+                        else:
+                            tool_calls[
+                                index
+                            ].function.arguments += tool_call.function.arguments
                 try:
                     content = chunk.choices[0].delta.content
                 except IndexError:
@@ -791,7 +915,12 @@ class AsyncChat(_Shared, AsyncKeyModel):
         )
 
     async def execute(
-        self, prompt, stream, response, conversation=None, key=None
+        self,
+        prompt: Prompt,
+        stream: bool,
+        response: AsyncResponse,
+        conversation: Optional[AsyncConversation] = None,
+        key: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         if prompt.system and not self.allows_system_prompt:
             raise NotImplementedError("Model does not support system prompts")
@@ -823,12 +952,15 @@ class AsyncChat(_Shared, AsyncKeyModel):
                     usage = chunk.usage.model_dump()
                 if chunk.choices and chunk.choices[0].delta:
                     for tool_call in chunk.choices[0].delta.tool_calls or []:
+                        if tool_call.function.arguments is None:
+                            tool_call.function.arguments = ""
                         index = tool_call.index
                         if index not in tool_calls:
                             tool_calls[index] = tool_call
-                        tool_calls[
-                            index
-                        ].function.arguments += tool_call.function.arguments
+                        else:
+                            tool_calls[
+                                index
+                            ].function.arguments += tool_call.function.arguments
                 try:
                     content = chunk.choices[0].delta.content
                 except IndexError:
@@ -889,10 +1021,17 @@ class Completion(Chat):
         super().__init__(*args, **kwargs)
         self.default_max_tokens = default_max_tokens
 
-    def __str__(self):
+    def __str__(self) -> str:
         return "OpenAI Completion: {}".format(self.model_id)
 
-    def execute(self, prompt, stream, response, conversation=None, key=None):
+    def execute(
+        self,
+        prompt: Prompt,
+        stream: bool,
+        response: Response,
+        conversation: Optional[Conversation] = None,
+        key: Optional[str] = None,
+    ) -> Iterator[str]:
         if prompt.system:
             raise NotImplementedError(
                 "System prompts are not supported for OpenAI completion models"
@@ -901,7 +1040,7 @@ class Completion(Chat):
         if conversation is not None:
             for prev_response in conversation.responses:
                 messages.append(prev_response.prompt.prompt)
-                messages.append(prev_response.text())
+                messages.append(cast(Response, prev_response).text())
         messages.append(prompt.prompt)
         kwargs = self.build_kwargs(prompt, stream)
         client = self.get_client(key)

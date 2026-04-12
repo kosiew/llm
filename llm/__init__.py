@@ -24,6 +24,7 @@ from .models import (
     ToolCall,
     ToolOutput,
     ToolResult,
+    Usage,
 )
 from .utils import schema_dsl, Fragment
 from .embeddings import Collection
@@ -40,6 +41,7 @@ import struct
 __all__ = [
     "AsyncConversation",
     "AsyncKeyModel",
+    "AsyncModel",
     "AsyncResponse",
     "Attachment",
     "CancelToolCall",
@@ -63,6 +65,7 @@ __all__ = [
     "ToolCall",
     "ToolOutput",
     "ToolResult",
+    "Usage",
     "user_dir",
     "schema_dsl",
 ]
@@ -107,7 +110,7 @@ def get_models_with_aliases() -> List["ModelWithAliases"]:
         model_aliases.append(ModelWithAliases(model, async_model, alias_list))
 
     load_plugins()
-    pm.hook.register_models(register=register)
+    pm.hook.register_models(register=register, model_aliases=model_aliases)
 
     return model_aliases
 

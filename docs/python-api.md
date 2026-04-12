@@ -79,6 +79,11 @@ response = model.prompt(
 ```
 Use `llm.Attachment(content=b"binary image content here")` to pass binary content directly.
 
+```{eval-rst}
+.. autoclass:: llm.Attachment
+   :members: resolve_type, content_bytes, base64_content
+```
+
 You can check which attachment types (if any) a model supports using the `model.attachment_types` set:
 
 ```python
@@ -217,6 +222,10 @@ def generate_image(prompt: str) -> llm.ToolOutput:
     )
 ```
 
+```{eval-rst}
+.. autoclass:: llm.ToolOutput
+```
+
 (python-api-toolbox)=
 
 #### Toolbox classes
@@ -258,6 +267,12 @@ class Memory(llm.Toolbox):
         "Return a list of keys"
         return list(self._get_memory().keys())
 ```
+
+```{eval-rst}
+.. autoclass:: llm.Toolbox
+   :members: tools, add_tool, prepare, prepare_async
+```
+
 You can then use that from Python like this:
 ```python
 model = llm.get_model("gpt-4.1-mini")
@@ -276,6 +291,31 @@ print(conversation.chain("Print current name", after_call=print).text())
 ```
 
 See the {ref}`register_tools() plugin hook documentation <plugin-hooks-register-tools>` for an example of this tool in action as a CLI plugin.
+
+(python-api-tools-dynamic)=
+#### Dynamic toolboxes
+
+Sometimes you may need to register additional tools against a toolbox after it has been created - for example if you are implementing an MCP plugin where the toolbox needs to consult the MCP server to discover what tools are available.
+
+You can use the `toolbox.add_tool(function_or_tool)` method to add a new tool to an existing toolbox.
+
+This can be passed a `llm.Tool` instance or a function that will be converted into a tool automatically.
+
+If you want your function to be able to access the toolbox instance itself as a `self` parameter, pass that function to `add_tool()` with the `pass_self=True` parameter:
+
+```python
+def my_function(self, arg1: str, arg2: int) -> str:
+    return f"Received {arg1} and {arg2} in {self}"
+
+toolbox.add_tool(my_function, pass_self=True)
+```
+Without `pass_self=True` the function will be called with only its declared arguments, with no `self` parameter.
+
+If your toolbox needs to run an additional command to figure out what it should register using `.add_tool()` you can implement a `prepare()` method on your toolbox class. This will be called once automatically when the toolbox is first used.
+
+In asynchronous contexts the alternative method `await toolbox.prepare_async()` method will be called before the toolbox is used. You can implement this method on your subclass and use it to run asynchronous operations that discover tools to be registered using `self.add_tool()`.
+
+If you want to prepare the class in this way such that it can be used in both synchronous and asynchronous contexts, implement both `prepare()` and `prepare_async()` methods.
 
 (python-api-schemas)=
 
@@ -461,7 +501,9 @@ Usage(input=5,
                                             'tokenCount': 2}],
                'promptTokensDetails': [{'modality': 'TEXT', 'tokenCount': 5}]})
 ```
-The `.input` and `.output` properties are integers representing the number of input and output tokens. The `.details` property may be a dictionary with additional custom values that vary by model.
+```{eval-rst}
+.. autoclass:: llm.Usage
+```
 
 (python-api-streaming-responses)=
 
@@ -477,6 +519,12 @@ for chunk in response:
 The `response.text()` method described earlier does this for you - it runs through the iterator and gathers the results into a string.
 
 If a response has been evaluated, `response.text()` will continue to return the same string.
+
+```{eval-rst}
+.. autoclass:: llm.Response
+   :members: text, json, usage, tool_calls, on_done
+   :exclude-members: fake, from_row, log_to_db
+```
 
 (python-api-async)=
 
@@ -504,6 +552,13 @@ async for chunk in model.prompt(
 ):
     print(chunk, end="", flush=True)
 ```
+
+```{eval-rst}
+.. autoclass:: llm.AsyncResponse
+   :members: text, json, usage, tool_calls, on_done
+   :exclude-members: fake, from_row, log_to_db
+```
+
 This `await model.prompt()` method takes the same arguments as the synchronous `model.prompt()` method, for options and attachments and `key=` and suchlike.
 
 (python-api-async-tools)=

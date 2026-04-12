@@ -1,5 +1,67 @@
 # Changelog
 
+(v0_30)=
+## 0.30 (2026-03-31)
+
+- The {ref}`register_models() plugin hook <plugin-hooks-register-models>` now takes an optional `model_aliases` parameter listing all of the models, async models and aliases that have been registered so far by other plugins. A plugin with `@hookimpl(trylast=True)` can use this to take previously registered models into account. [#1389](https://github.com/simonw/llm/issues/1389)
+- Added docstrings to public classes and methods and included those directly in the documentation.
+
+(v0_29)=
+## 0.29 (2026-03-17)
+
+- The `-t/--template` option now works correctly with the `-x/--extract` and `--xl/--extract-last` flags.
+- `llm logs` now shows any additional model options in the Markdown output. [#1322](https://github.com/simonw/llm/issues/1322)
+- New OpenAI models: `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`. [#1376](https://github.com/simonw/llm/issues/1376)
+
+(v0_28)=
+## 0.28 (2025-12-12)
+
+- New OpenAI models: `gpt-5.1`, `gpt-5.1-chat-latest`, `gpt-5.2` and `gpt-5.2-chat-latest`. [#1300](https://github.com/simonw/llm/issues/1300), [#1317](https://github.com/simonw/llm/issues/1317)
+- LLM now requires Python 3.10 or higher. Python 3.14 is now covered by the tests.
+- When fetching URLs as fragments using `llm -f URL`, the request now includes a custom user-agent header: `llm/VERSION (https://llm.datasette.io/)`. [#1309](https://github.com/simonw/llm/issues/1309)
+- Fixed a bug where fragments were not correctly registered with their source when using `llm chat`. Thanks, [Giuseppe Rota](https://github.com/grota). [#1316](https://github.com/simonw/llm/pull/1316)
+- Fixed some file descriptor leak warnings. Thanks, [Eric Bloch](https://github.com/eedeebee). [#1313](https://github.com/simonw/llm/issues/1313)
+- Fixed a deprecation warning for `asyncio.iscoroutinefunction`.
+- Type annotations for the OpenAI Chat, AsyncChat and Completion `execute()` methods. Thanks, [Arjan Mossel](https://github.com/ar-jan). [#1315](https://github.com/simonw/llm/pull/1315)
+- The project now uses `uv` and dependency groups for development. See the updated {ref}`contributing documentation <contributing>`. [#1318](https://github.com/simonw/llm/issues/1318)
+
+(v0_27_1)=
+## 0.27.1 (2025-08-11)
+
+- `llm chat -t template` now correctly loads any tools that are included in that template. [#1239](https://github.com/simonw/llm/issues/1239)
+- Fixed a bug where `llm -m gpt5 -o reasoning_effort minimal --save gm` saved a template containing invalid YAML. [#1237](https://github.com/simonw/llm/issues/1237)
+- Fixed a bug where running `llm chat -t template` could cause prompts to be duplicated. [#1240](https://github.com/simonw/llm/issues/1240)
+- Less confusing error message if a requested toolbox class is unavailable. [#1238](https://github.com/simonw/llm/issues/1238)
+
+(v0_27)=
+## 0.27 (2025-08-11)
+
+This release adds support for the new **GPT-5 family** of models from OpenAI. It also enhances tool calling in a number of ways, including allowing {ref}`templates <prompt-templates>` to bundle pre-configured tools.
+
+### New features
+
+- New models: `gpt-5`, `gpt-5-mini` and `gpt-5-nano`. [#1229](https://github.com/simonw/llm/issues/1229)
+- LLM {ref}`templates <prompt-templates>` can now include a list of tools. These can be named tools from plugins or arbitrary Python function blocks, see {ref}`Tools in templates <prompt-templates-tools>`. [#1009](https://github.com/simonw/llm/issues/1009)
+- Tools {ref}`can now return attachments <python-api-tools-attachments>`, for models that support features such as image input. [#1014](https://github.com/simonw/llm/issues/1014)
+- New methods on the `Toolbox` class: `.add_tool()`, `.prepare()` and `.prepare_async()`, described in {ref}`Dynamic toolboxes <python-api-tools-dynamic>`. [#1111](https://github.com/simonw/llm/issues/1111)
+- New `model.conversation(before_call=x, after_call=y)` attributes for registering callback functions to run before and after tool calls. See  {ref}`tool debugging hooks <python-api-tools-debug-hooks>` for details. [#1088](https://github.com/simonw/llm/issues/1088)
+- Some model providers can serve different models from the same configured URL - [llm-llama-server](https://github.com/simonw/llm-llama-server) for example. Plugins for these providers can now record the resolved model ID of the model that was used to the LLM logs using the `response.set_resolved_model(model_id)` method. [#1117](https://github.com/simonw/llm/issues/1117)
+- Raising `llm.CancelToolCall` now only cancels the current tool call, passing an error back to the model and allowing it to continue. [#1148](https://github.com/simonw/llm/issues/1148)
+- New `-l/--latest` option for `llm logs -q searchterm` for searching logs ordered by date (most recent first) instead of the default relevance search. [#1177](https://github.com/simonw/llm/issues/1177)
+
+### Bug fixes and documentation
+
+- Fix for various bugs with different formats of streaming function responses for OpenAI-compatible models. Thanks, [James Sanford](https://github.com/jamessanford). [#1218](https://github.com/simonw/llm/pull/1218)
+- The `register_embedding_models` hook is [now documented](https://llm.datasette.io/en/stable/plugins/plugin-hooks.html#register-embedding-models-register). [#1049](https://github.com/simonw/llm/issues/1049)
+- Show visible stack trace for `llm templates show invalid-template-name`. [#1053](https://github.com/simonw/llm/issues/1053)
+- Handle invalid tool names more gracefully in `llm chat`. [#1104](https://github.com/simonw/llm/issues/1104)
+- Add a {ref}`Tool plugins <plugin-directory-tools>` section to the plugin directory. [#1110](https://github.com/simonw/llm/issues/1110)
+- Error on `register(Klass)` if the passed class is not a subclass of `Toolbox`. [#1114](https://github.com/simonw/llm/issues/1114)
+- Add `-h` for `--help` for all `llm` CLI commands. [#1134](https://github.com/simonw/llm/issues/1134)
+- Add missing `dataclasses` to advanced model plugins docs. [#1137](https://github.com/simonw/llm/issues/1137)
+- Fixed a bug where `llm logs -T llm_version "version" --async` incorrectly recorded just one single log entry when it should have recorded two. [#1150](https://github.com/simonw/llm/issues/1150)
+- All extra OpenAI model keys in `extra-openai-models.yaml` are {ref}`now documented <openai-compatible-models>`. [#1228](https://github.com/simonw/llm/issues/1228)
+
 (v0_26)=
 ## 0.26 (2025-05-27)
 
