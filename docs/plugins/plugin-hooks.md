@@ -228,14 +228,14 @@ The `llm.Template` class has the following constructor:
 .. autoclass:: llm.Template
 ```
 
-The loader function should raise a `ValueError` if the template cannot be found or loaded correctly, providing a clear error message.
+The loader function should raise a `ValueError` if the template cannot be found or loaded correctly, providing a clear error message. If you need to translate an exception from another library, catch that specific exception and use `raise ValueError(...) from ex` to preserve its context.
 
 Note that `functions:` provided by templates using this plugin hook will not be made available, to avoid the risk of plugin hooks that load templates from remote sources introducing arbitrary code execution vulnerabilities.
 
 (plugin-hooks-register-fragment-loaders)=
 ## register_fragment_loaders(register)
 
-Plugins can register new fragment loaders using the `register_template_loaders` hook. These can then be used with the `llm -f prefix:argument` syntax.
+Plugins can register new fragment loaders using the `register_fragment_loaders` hook. These can then be used with the `llm -f prefix:argument` syntax.
 
 Fragment loader plugins differ from template loader plugins in that you can stack more than one fragment loader call together in the same prompt.
 
@@ -275,11 +275,13 @@ def my_fragment_loader(argument: str) -> llm.Fragment:
         )
 
 # Or for the case where you want to return multiple fragments and attachments:
-def my_fragment_loader(argument: str) -> list[llm.Fragment]:
+def my_fragment_loader(
+    argument: str,
+) -> list[llm.Fragment | llm.Attachment]:
     "Docs go here."
     return [
-        llm.Fragment("Fragment 1 content", "my-fragments:{argument}"),
-        llm.Fragment("Fragment 2 content", "my-fragments:{argument}"),
+        llm.Fragment("Fragment 1 content", f"my-fragments:{argument}"),
+        llm.Fragment("Fragment 2 content", f"my-fragments:{argument}"),
         llm.Attachment(path="/path/to/image.png"),
     ]
 ```
@@ -289,4 +291,4 @@ llm -f my-fragments:argument
 ```
 If multiple fragments are returned they will be used as if the user passed multiple `-f X` arguments to the command.
 
-Multiple fragments are particularly useful for things like plugins that return every file in a directory. If these were concatenated together by the plugin, a change to a single file would invalidate the de-duplicatino cache for that whole fragment. Giving each file its own fragment means we can avoid storing multiple copies of that full collection if only a single file has changed.
+Multiple fragments are particularly useful for things like plugins that return every file in a directory. If these were concatenated together by the plugin, a change to a single file would invalidate the de-duplication cache for that whole fragment. Giving each file its own fragment means we can avoid storing multiple copies of that full collection if only a single file has changed.

@@ -7,12 +7,12 @@ Understanding this API is also important for writing {ref}`plugins`.
 
 ## Basic prompt execution
 
-To run a prompt against the `gpt-4o-mini` model, run this:
+To run a prompt against the `gpt-5.6-luna` model, run this:
 
 ```python
 import llm
 
-model = llm.get_model("gpt-4o-mini")
+model = llm.get_model("gpt-5.6-luna")
 # key= is optional, you can configure the key in other ways
 response = model.prompt(
     "Five surprising names for a pet pelican",
@@ -26,7 +26,7 @@ If you inspect the response before it has been evaluated it will look like this:
 
     <Response prompt='Your prompt' text='... not yet done ...'>
 
-The `llm.get_model()` function accepts model IDs or aliases. You can also omit it to use the currently configured default model, which is `gpt-4o-mini` if you have not changed the default.
+The `llm.get_model()` function accepts model IDs or aliases. You can also omit it to use the currently configured default model, which is `gpt-5.6-luna` if you have not changed the default.
 
 In this example the key is set by Python code. You can also provide the key using the `OPENAI_API_KEY` environment variable, or use the `llm keys set openai` command to store it in a `keys.json` file, see {ref}`api-keys`.
 
@@ -68,7 +68,7 @@ This example shows two attachments - one from a file path and one from a URL:
 ```python
 import llm
 
-model = llm.get_model("gpt-4o-mini")
+model = llm.get_model("gpt-5.6-luna")
 response = model.prompt(
     "Describe these images",
     attachments=[
@@ -87,7 +87,7 @@ Use `llm.Attachment(content=b"binary image content here")` to pass binary conten
 You can check which attachment types (if any) a model supports using the `model.attachment_types` set:
 
 ```python
-model = llm.get_model("gpt-4o-mini")
+model = llm.get_model("gpt-5.6-luna")
 print(model.attachment_types)
 # {'image/gif', 'image/png', 'image/jpeg', 'image/webp'}
 
@@ -116,12 +116,26 @@ response = model.prompt("Convert panda to upper", tools=[upper])
 tool_calls = response.tool_calls()
 # [ToolCall(name='upper', arguments={'text': 'panda'}, tool_call_id='...')]
 ```
+Every tool call is guaranteed to have a unique `tool_call_id`. Most providers supply their own; for providers that do not, LLM synthesizes one of the form `tc_01...`, so you can always use the id to correlate a tool call with its result or to key external state against a specific invocation.
 You can call `response.execute_tool_calls()` to execute those calls and get back the results:
 ```python
 tool_results = response.execute_tool_calls()
 # [ToolResult(name='upper', output='PANDA', tool_call_id='...')]
 ```
-You can use the `model.chain()` to pass the results of tool calls back to the model automatically as subsequent prompts:
+To get the model's follow-up reply, call `response.reply()` — when the previous response made tool calls, `reply()` automatically executes them and feeds the results back into the next turn:
+```python
+follow_up = response.reply()
+print(follow_up.text())
+# The word "panda" converted to uppercase is "PANDA".
+```
+You can also pass an additional user prompt: `response.reply("now translate it to French")`. To use custom or already-computed tool results (e.g. results you mutated, or synthetic ones for testing) pass them explicitly with `tool_results=` and the auto-execute step is skipped:
+```python
+follow_up = response.reply(
+    "now translate it",
+    tool_results=[llm.ToolResult(name="upper", output="PANDA", tool_call_id="...")],
+)
+```
+For an automatic loop that keeps going until the model stops requesting tools, use `model.chain()` — it passes tool call results back to the model automatically as subsequent prompts:
 ```python
 chain_response = model.chain(
     "Convert panda to upper",
@@ -159,20 +173,20 @@ for response in chain.responses():
 
 Pass a function to the `before_call=` parameter of `model.chain()` to have that called before every tool call is executed. You can raise `llm.CancelToolCall()` to cancel that tool call.
 
-The method signature is `def before_call(tool: Optional[llm.Tool], tool_call: llm.ToolCall)` - that first `tool` argument can be `None` if the model requests a tool be executed that has not been provided in the `tools=` list.
+The method signature is `def before_call(tool: llm.Tool | None, tool_call: llm.ToolCall)` - that first `tool` argument can be `None` if the model requests a tool be executed that has not been provided in the `tools=` list.
 
 Here's an example:
 ```python
 import llm
-from typing import Optional
 
 def upper(text: str) -> str:
     "Convert text to uppercase."
     return text.upper()
 
-def before_call(tool: Optional[llm.Tool], tool_call: llm.ToolCall):
-    print(f"About to call tool {tool.name} with arguments {tool_call.arguments}")
-    if tool.name == "upper" and "bad" in repr(tool_call.arguments):
+def before_call(tool: llm.Tool | None, tool_call: llm.ToolCall):
+    tool_name = tool.name if tool is not None else tool_call.name
+    print(f"About to call tool {tool_name} with arguments {tool_call.arguments}")
+    if tool_name == "upper" and "bad" in repr(tool_call.arguments):
         raise llm.CancelToolCall("Not allowed to call upper on text containing 'bad'")
 
 model = llm.get_model("gpt-4.1-mini")
@@ -197,6 +211,76 @@ response = model.chain(
 )
 print(response.text())
 ```
+
+(python-api-tools-llm-tool-call)=
+
+#### Accessing the tool call from inside a tool
+
+Tool implementations sometimes need to know about the `llm.ToolCall` that triggered them - most often the `tool_call_id` (always populated, see above), which can be used to key external state against that specific invocation.
+
+If your tool function accepts a parameter named `llm_tool_call` it will be passed the `llm.ToolCall` object for the current call:
+
+```python
+import llm
+
+def lookup(name: str, llm_tool_call: llm.ToolCall) -> str:
+    "Look up a name."
+    return do_lookup(name, request_id=llm_tool_call.tool_call_id)
+```
+
+The `llm_tool_call` parameter name is reserved: it is excluded from the input schema that is exposed to the model and is populated automatically when the tool executes. The type annotation is optional.
+
+This works for both sync and async tool functions, and for methods on `llm.Toolbox` subclasses. The parameter must be declared explicitly - a `**kwargs` catch-all will not receive `llm_tool_call`.
+
+(python-api-tools-pause)=
+
+#### Pausing a chain from inside a tool
+
+Sometimes a tool cannot finish without outside input - human approval being the classic case. Raise `llm.PauseChain` inside a tool implementation to stop the chain cleanly:
+
+```python
+import llm
+
+def delete_files(path: str) -> str:
+    if not approval_already_recorded(path):
+        record_approval_request(path)
+        raise llm.PauseChain("waiting for approval to delete " + path)
+    do_delete(path)
+    return "deleted"
+```
+
+Unlike other exceptions - which are converted into `"Error: ..."` tool results and sent back to the model - `PauseChain` propagates out of the chain to your code. No provider call is made with a placeholder result. Before re-raising, the framework populates two attributes:
+
+- `pause.tool_call` - the `llm.ToolCall` whose implementation paused
+- `pause.tool_results` - results of sibling calls in the same batch that completed
+
+```python
+try:
+    chain_response.text()
+except llm.PauseChain as pause:
+    print("Paused on", pause.tool_call.name, pause.tool_call.tool_call_id)
+```
+
+The failure semantics are defined: concurrent (async) sibling tool calls always run to completion before the exception propagates - their `after_call` hooks fire and their results are preserved - while sequential (sync) execution stops at the paused call, leaving later calls unexecuted so they can safely run on resume. If several concurrent calls pause, the first by call order propagates. `after_call` does not fire for a paused call, and no `ToolResult` is recorded for it - which is what marks it as still pending.
+
+(python-api-tools-resume)=
+
+#### Resuming a chain with pending tool calls
+
+To resume after a pause (or a crash, or a server restart), re-run the chain with a `messages=` history that ends in the unresolved tool calls. When the last assistant message in the history contains tool calls that have no matching results, the chain executes them first - through the normal `before_call`/`after_call` machinery - and then sends the results to the model:
+
+```python
+chain = model.chain(
+    messages=persisted_messages,  # ends in assistant tool calls with no results
+    tools=[delete_files],
+    system=system_prompt,
+)
+chain.text()
+```
+
+Calls that already have results in trailing tool-role messages are skipped, so a batch where some calls completed before the pause only re-executes the unresolved ones. A re-executed tool may raise `PauseChain` again - multi-step approval flows work by repeating the cycle. If a user or assistant message follows the tool calls in the history, the conversation has moved on and nothing is re-executed.
+
+Matching uses `tool_call_id` (always populated for newly-created tool calls); id-less calls from older persisted histories match results by name. You can also execute an explicit list of calls directly with `response.execute_tool_calls(tool_calls_list=[...])`.
 
 (python-api-tools-attachments)=
 
@@ -333,7 +417,7 @@ class Dog(BaseModel):
     name: str
     age: int
 
-model = llm.get_model("gpt-4o-mini")
+model = llm.get_model("gpt-5.6-luna")
 response = model.prompt("Describe a nice dog", schema=Dog)
 dog = json.loads(response.text())
 print(dog)
@@ -376,11 +460,13 @@ print(model.prompt(
 The {ref}`fragment system <usage-fragments>` from the CLI tool can also be accessed from the Python API, by passing `fragments=` and/or `system_fragments=` lists of strings to the `prompt()` method:
 
 ```python
+from pathlib import Path
+
 response = model.prompt(
     "What do these documents say about dogs?",
     fragments=[
-        open("dogs1.txt").read(),
-        open("dogs2.txt").read(),
+        Path("dogs1.txt").read_text(),
+        Path("dogs2.txt").read_text(),
     ],
     system_fragments=[
         "You answer questions like Snoopy",
@@ -398,11 +484,11 @@ Some model plugins may include features that take advantage of fragments, for ex
 
 ### Model options
 
-For models that support options (view those with `llm models --options`) you can pass options as keyword arguments to the `.prompt()` method:
+For models that support options (view those with `llm models --options`) pass them as a dictionary to the `options=` argument of the `.prompt()` method:
 
 ```python
 model = llm.get_model()
-print(model.prompt("Names for otters", temperature=0.2))
+print(model.prompt("Names for otters", options={"temperature": 0.2}))
 ```
 
 (python-api-models-api-keys)=
@@ -412,7 +498,7 @@ print(model.prompt("Names for otters", temperature=0.2))
 Models that accept API keys should take an additional `key=` parameter to their `model.prompt()` method:
 
 ```python
-model = llm.get_model("gpt-4o-mini")
+model = llm.get_model("gpt-5.6-luna")
 print(model.prompt("Names for beavers", key="sk-..."))
 ```
 
@@ -453,32 +539,30 @@ You can access this JSON data as a Python dictionary using the `response.json()`
 import llm
 from pprint import pprint
 
-model = llm.get_model("gpt-4o-mini")
+model = llm.get_model("gpt-5.6-luna")
 response = model.prompt("3 names for an otter")
 json_data = response.json()
 pprint(json_data)
 ```
-Here's that example output from GPT-4o mini:
+Here's an abbreviated example of that output from GPT-5.6 Luna:
 ```python
-{'content': 'Sure! Here are three fun names for an otter:\n'
-            '\n'
-            '1. **Splash**\n'
-            '2. **Bubbles**\n'
-            '3. **Otto** \n'
-            '\n'
-            'Feel free to mix and match or use these as inspiration!',
- 'created': 1739291215,
- 'finish_reason': 'stop',
- 'id': 'chatcmpl-AznO31yxgBjZ4zrzBOwJvHEWgdTaf',
- 'model': 'gpt-4o-mini-2024-07-18',
- 'object': 'chat.completion.chunk',
- 'usage': {'completion_tokens': 43,
-           'completion_tokens_details': {'accepted_prediction_tokens': 0,
-                                         'audio_tokens': 0,
-                                         'reasoning_tokens': 0,
-                                         'rejected_prediction_tokens': 0},
-           'prompt_tokens': 13,
-           'prompt_tokens_details': {'audio_tokens': 0, 'cached_tokens': 0},
+{'created_at': 1785451200.0,
+ 'id': 'resp_...',
+ 'model': 'gpt-5.6-luna',
+ 'object': 'response',
+ 'output': [
+     # Reasoning and message items are abbreviated here
+     {'content': [{'annotations': [],
+                   'text': '1. Splash\n2. Bubbles\n3. Otto',
+                   'type': 'output_text'}],
+      'id': 'msg_...',
+      'role': 'assistant',
+      'status': 'completed',
+      'type': 'message'}],
+ 'status': 'completed',
+ 'usage': {'input_tokens': 13,
+           'output_tokens': 43,
+           'output_tokens_details': {'reasoning_tokens': 0},
            'total_tokens': 56}}
 ```
 
@@ -525,6 +609,116 @@ If a response has been evaluated, `response.text()` will continue to return the 
    :members: text, json, usage, tool_calls, on_done
    :exclude-members: fake, from_row, log_to_db
 ```
+
+(python-api-messages)=
+
+### Structured messages and streaming events
+
+Many LLMs return structure that goes beyond a plain text response. LLM represents these using **messages** that consist of **parts**.
+
+A conversation consists of turns, where each turn is an `llm.Message` with a `role` (`"user"`, `"assistant"`, `"system"`, or `"tool"`) and a list of `Part` objects — `TextPart`, `ReasoningPart`, `ToolCallPart`, `ToolResultPart`, or `AttachmentPart`.
+
+You can pass structured prompt inputs via `messages=[...]`, iterate over typed events as the model streams, and inspect the assembled message after the response completes.
+
+Here's how to prompt a model with a list of messages instead of a plain text prompt:
+
+```python
+import llm
+from llm import user, assistant, system
+
+model = llm.get_model("gpt-5.4-mini")
+
+response = model.prompt(messages=[
+    system("You are a helpful pirate."),
+    user("What is the capital of France?"),
+    assistant("Paris, matey."),
+    user("And Germany?"),
+])
+print(response.text())
+```
+
+The `user()`, `assistant()`, and `system()` helpers accept strings (wrapped as `TextPart`) but can also accept `llm.Attachment` instances (wrapped as `AttachmentPart`) or more complex sequences of `Part` objects.
+
+Calling `model.prompt("hi", system="Be brief.")` is equivalent to `model.prompt(messages=[system("Be brief."), user("hi")])`.
+
+#### Streaming events as they arrive
+
+`response.stream_events()` yields typed events for every content block the model produces as they stream in. This is useful for interfaces that show the model response "live".
+
+```python
+response = model.prompt("Explain quantum computing briefly.")
+for event in response.stream_events():
+    if event.type == "reasoning":
+        print(f"[thinking] {event.chunk}", end="", flush=True)
+    elif event.type == "text":
+        print(event.chunk, end="", flush=True)
+    elif event.type == "tool_call_name":
+        print(f"\n[calling tool: {event.chunk}]")
+    elif event.type == "tool_call_args":
+        print(event.chunk, end="", flush=True)
+```
+
+Event types are `"text"`, `"reasoning"`, `"tool_call_name"`, `"tool_call_args"`, and `"tool_result"`. Each event carries a `part_index` that groups events into the same logical Part (all events at the same `part_index` assemble into one Part after the stream completes). For async models, use `async for event in response.astream_events()`.
+
+Iterating against the response object itself (`for chunk in response`) yields only text strings — reasoning and tool-call events are filtered out.
+
+#### Hiding reasoning output
+
+Some model plugins can return visible reasoning text, exposed as `"reasoning"` events from `response.stream_events()` and assembled as `ReasoningPart` objects in `response.messages()`.
+
+Pass `hide_reasoning=True` to ask LLM and supported model plugins not to expose that visible reasoning output:
+
+```python
+response = model.prompt(
+    "Explain quantum computing briefly.",
+    hide_reasoning=True,
+)
+print(response.text())
+```
+
+This is the Python API equivalent of the CLI `-R/--hide-reasoning` option. It is available on `model.prompt()`, `conversation.prompt()`, `model.chain()`, `conversation.chain()`, and their async counterparts.
+
+Note that this only requests that the underlying model does not return visible tokens. This request may not be supported by your provider, in which case this hint will not prevent visible reasoning tokens from being returned in the stream.
+
+#### Inspecting the finished response
+
+`response.messages()` returns the assembled list of `Message` objects produced by the model, excluding the messages from the original prompt. Calling it forces execution if the response hasn't been drained yet, so you don't need a separate `response.text()` first:
+
+```python
+response = model.prompt("What's 2+2?")
+for message in response.messages():
+    for part in message.parts:
+        print(type(part).__name__, part.to_dict())
+```
+
+On async models `messages()` is awaitable: `await response.messages()`.
+
+#### Persisting a conversation
+
+A `Response` can round-trip through a plain Python dictionary via `response.to_dict()` and `llm.Response.from_dict(...)`. The dict captures the model id, the input messages that were sent, the assistant output, and any options. The re-inflated object can be used to continue the conversation.
+
+Use `response.reply(...)` to continue from a rehydrated response:
+
+```python
+import json
+import llm
+
+model = llm.get_model("gpt-5.4-mini")
+response = model.prompt("What's 2+2?")
+print(response.text())
+
+payload = json.dumps(response.to_dict())
+# ...save `payload` wherever you want...
+
+# Later — rehydrate and continue.
+rebuilt = llm.Response.from_dict(json.loads(payload))
+followup = rebuilt.reply("Add 3 to that")
+print(followup.text())
+```
+
+`AttachmentPart` bytes are base64-encoded in the dict form, so multi-modal conversations round-trip via JSON too.
+
+Individual `Message` and `Part` objects also support `to_dict()` / `from_dict()` if you need to manipulate turns directly — for example, to edit, filter, or splice messages before passing them back via `model.prompt(messages=[...])`.
 
 (python-api-async)=
 
@@ -611,6 +805,13 @@ async for chunk in model.chain(
     tools=[upper]
 ):
     print(chunk, end="", flush=True)
+```
+`response.reply()` is awaitable on async models — it `await`s `execute_tool_calls()` internally before building the next turn:
+```python
+response = model.prompt("Convert panda to upper", tools=[upper])
+await response.text()
+follow_up = await response.reply()
+print(await follow_up.text())
 ```
 The `before_call` and `after_call` hooks can be async functions when used with async models.
 
@@ -715,7 +916,7 @@ Example usage:
 ```python
 import llm
 
-model = llm.get_model("gpt-4o-mini")
+model = llm.get_model("gpt-5.6-luna")
 response = model.prompt("a poem about a hippo")
 response.on_done(lambda response: print(response.usage()))
 print(response.text())
@@ -732,7 +933,7 @@ Or using an `asyncio` model, where you need to `await response.on_done(done)` to
 import asyncio, llm
 
 async def run():
-    model = llm.get_async_model("gpt-4o-mini")
+    model = llm.get_async_model("gpt-5.6-luna")
     response = model.prompt("a short poem about a brick")
     async def done(response):
         print(await response.usage())
@@ -754,7 +955,7 @@ The `llm.set_alias()` function can be used to define a new alias:
 ```python
 import llm
 
-llm.set_alias("mini", "gpt-4o-mini")
+llm.set_alias("mini", "gpt-5.6-luna")
 ```
 The second argument can be a model identifier or another alias, in which case that alias will be resolved.
 
@@ -779,12 +980,12 @@ This sets the default model to the given model ID or alias. Any changes to defau
 ```python
 import llm
 
-llm.set_default_model("claude-3.5-sonnet")
+llm.set_default_model("claude-5-sonnet")
 ```
 
 ### get_default_model()
 
-This returns the currently configured default model, or `gpt-4o-mini` if no default has been set.
+This returns the currently configured default model, or `gpt-5.6-luna` if no default has been set.
 
 ```python
 import llm

@@ -69,13 +69,27 @@ Or with [uv](https://docs.astral.sh/uv/guides/tools/)
 uv tool install llm
 ```
 
+Use LLM to run prompts or start chats against an arbitrary OpenAI-compatible Chat Completions endpoint, such as [LM Studio](https://lmstudio.ai). With `uvx`, you can do this without installing LLM first:
+
+```bash
+uvx llm openai endpoint http://localhost:1234/v1 \
+  -m google/gemma-4-12b \
+  "What is the capital of France?"
+
+uvx llm openai endpoint http://localhost:1234/v1 \
+  -m google/gemma-4-12b \
+  --chat
+```
+
+Add `--key your-api-key` if the endpoint requires authentication. See [Run against an endpoint without configuring it](https://llm.datasette.io/en/stable/other-models.html#openai-endpoint) for more options.
+
 If you have an [OpenAI API key](https://platform.openai.com/api-keys) key you can run this:
 
 ```bash
 # Paste your OpenAI API key into this
 llm keys set openai
 
-# Run a prompt (with the default gpt-4o-mini model)
+# Run a prompt (with the default gpt-5.6-luna model)
 llm "Ten fun names for a pet pelican"
 
 # Extract text from an image
@@ -91,12 +105,12 @@ Run prompts against [Gemini](https://aistudio.google.com/apikey) or [Anthropic](
 llm install llm-gemini
 llm keys set gemini
 # Paste Gemini API key here
-llm -m gemini-2.0-flash 'Tell me fun facts about Mountain View'
+llm -m gemini-3.5-flash 'Tell me fun facts about Mountain View'
 
 llm install llm-anthropic
 llm keys set anthropic
 # Paste Anthropic API key here
-llm -m claude-4-opus 'Impress me with wild facts about turnips'
+llm -m claude-5-opus 'Impress me with wild facts about turnips'
 ```
 
 You can also [install a plugin](https://llm.datasette.io/en/stable/plugins/installing-plugins.html#installing-plugins) to access models that can run on your local device. If you use [Ollama](https://ollama.com/):
@@ -163,6 +177,7 @@ See also [the llm tag](https://simonwillison.net/tags/llm/) on my blog.
     * [System prompts](https://llm.datasette.io/en/stable/usage.html#system-prompts)
     * [Tools](https://llm.datasette.io/en/stable/usage.html#tools)
     * [Extracting fenced code blocks](https://llm.datasette.io/en/stable/usage.html#extracting-fenced-code-blocks)
+    * [JSON output](https://llm.datasette.io/en/stable/usage.html#json-output)
     * [Schemas](https://llm.datasette.io/en/stable/usage.html#schemas)
     * [Fragments](https://llm.datasette.io/en/stable/usage.html#fragments)
     * [Continuing a conversation](https://llm.datasette.io/en/stable/usage.html#continuing-a-conversation)
@@ -181,6 +196,8 @@ See also [the llm tag](https://simonwillison.net/tags/llm/) on my blog.
 * [Other models](https://llm.datasette.io/en/stable/other-models.html)
   * [Installing and using a local model](https://llm.datasette.io/en/stable/other-models.html#installing-and-using-a-local-model)
   * [OpenAI-compatible models](https://llm.datasette.io/en/stable/other-models.html#openai-compatible-models)
+    * [Run against an endpoint without configuring it](https://llm.datasette.io/en/stable/other-models.html#run-against-an-endpoint-without-configuring-it)
+    * [Configure an OpenAI-compatible model](https://llm.datasette.io/en/stable/other-models.html#configure-an-openai-compatible-model)
     * [Extra HTTP headers](https://llm.datasette.io/en/stable/other-models.html#extra-http-headers)
 * [Tools](https://llm.datasette.io/en/stable/tools.html)
   * [How tools work](https://llm.datasette.io/en/stable/tools.html#how-tools-work)
@@ -281,6 +298,9 @@ See also [the llm tag](https://simonwillison.net/tags/llm/) on my blog.
     * [Supporting schemas](https://llm.datasette.io/en/stable/plugins/advanced-model-plugins.html#supporting-schemas)
     * [Supporting tools](https://llm.datasette.io/en/stable/plugins/advanced-model-plugins.html#supporting-tools)
     * [Attachments for multi-modal models](https://llm.datasette.io/en/stable/plugins/advanced-model-plugins.html#attachments-for-multi-modal-models)
+    * [Structured messages and streaming events](https://llm.datasette.io/en/stable/plugins/advanced-model-plugins.html#structured-messages-and-streaming-events)
+    * [Consuming prompt.messages in build_messages](https://llm.datasette.io/en/stable/plugins/advanced-model-plugins.html#consuming-prompt-messages-in-build-messages)
+    * [Restoring opaque metadata on subsequent requests](https://llm.datasette.io/en/stable/plugins/advanced-model-plugins.html#restoring-opaque-metadata-on-subsequent-requests)
     * [Tracking token usage](https://llm.datasette.io/en/stable/plugins/advanced-model-plugins.html#tracking-token-usage)
     * [Tracking resolved model names](https://llm.datasette.io/en/stable/plugins/advanced-model-plugins.html#tracking-resolved-model-names)
     * [LLM_RAISE_ERRORS](https://llm.datasette.io/en/stable/plugins/advanced-model-plugins.html#llm-raise-errors)
@@ -302,6 +322,7 @@ See also [the llm tag](https://simonwillison.net/tags/llm/) on my blog.
     * [Accessing the underlying JSON](https://llm.datasette.io/en/stable/python-api.html#accessing-the-underlying-json)
     * [Token usage](https://llm.datasette.io/en/stable/python-api.html#token-usage)
     * [Streaming responses](https://llm.datasette.io/en/stable/python-api.html#streaming-responses)
+    * [Structured messages and streaming events](https://llm.datasette.io/en/stable/python-api.html#structured-messages-and-streaming-events)
   * [Async models](https://llm.datasette.io/en/stable/python-api.html#async-models)
     * [`AsyncResponse`](https://llm.datasette.io/en/stable/python-api.html#llm.AsyncResponse)
     * [Tool functions can be sync or async](https://llm.datasette.io/en/stable/python-api.html#tool-functions-can-be-sync-or-async)
@@ -328,6 +349,15 @@ See also [the llm tag](https://simonwillison.net/tags/llm/) on my blog.
     * [Browsing data collected using schemas](https://llm.datasette.io/en/stable/logging.html#browsing-data-collected-using-schemas)
   * [Browsing logs using Datasette](https://llm.datasette.io/en/stable/logging.html#browsing-logs-using-datasette)
   * [Backing up your database](https://llm.datasette.io/en/stable/logging.html#backing-up-your-database)
+  * [The message store](https://llm.datasette.io/en/stable/logging.html#the-message-store)
+    * [Threads, turns, messages and parts](https://llm.datasette.io/en/stable/logging.html#threads-turns-messages-and-parts)
+    * [A worked example](https://llm.datasette.io/en/stable/logging.html#a-worked-example)
+    * [Content addressing as a contract](https://llm.datasette.io/en/stable/logging.html#content-addressing-as-a-contract)
+    * [Forking and shared history](https://llm.datasette.io/en/stable/logging.html#forking-and-shared-history)
+    * [Storage by reference](https://llm.datasette.io/en/stable/logging.html#storage-by-reference)
+    * [Table by table](https://llm.datasette.io/en/stable/logging.html#table-by-table)
+    * [Querying the message store](https://llm.datasette.io/en/stable/logging.html#querying-the-message-store)
+    * [Logging from Python](https://llm.datasette.io/en/stable/logging.html#logging-from-python)
   * [SQL schema](https://llm.datasette.io/en/stable/logging.html#sql-schema)
 * [Related tools](https://llm.datasette.io/en/stable/related-tools.html)
   * [strip-tags](https://llm.datasette.io/en/stable/related-tools.html#strip-tags)

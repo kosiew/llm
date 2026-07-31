@@ -1,10 +1,12 @@
-from click.testing import CliRunner
 import os
 import sys
 from unittest.mock import ANY
+
+import pytest
+from click.testing import CliRunner
+
 import llm
 from llm import cli
-import pytest
 
 TINY_PNG = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\xa6\x00\x00\x01\x1a"
@@ -42,13 +44,12 @@ def test_prompt_attachment(mock_model, logs_db, attachment_type, attachment_cont
     )
 
     # Check it was logged correctly
-    conversations = list(logs_db["conversations"].rows)
-    assert len(conversations) == 1
-    conversation = conversations[0]
-    assert conversation["model"] == "mock"
-    assert conversation["name"] == "describe file"
-    response = list(logs_db["responses"].rows)[0]
-    attachment = list(logs_db["attachments"].rows)[0]
+    threads = list(logs_db["threads"].rows)
+    assert len(threads) == 1
+    assert threads[0]["name"] == "describe file"
+    turn = next(iter(logs_db["turns"].rows))
+    assert turn["model"] == "mock"
+    attachment = next(iter(logs_db["attachments"].rows))
     assert attachment == {
         "id": ANY,
         "type": attachment_type,
@@ -56,9 +57,9 @@ def test_prompt_attachment(mock_model, logs_db, attachment_type, attachment_cont
         "url": None,
         "content": attachment_content,
     }
-    prompt_attachment = list(logs_db["prompt_attachments"].rows)[0]
-    assert prompt_attachment["attachment_id"] == attachment["id"]
-    assert prompt_attachment["response_id"] == response["id"]
+    # The attachment hangs off a part of the stored user message
+    part_attachment = next(iter(logs_db["part_attachments"].rows))
+    assert part_attachment["attachment_id"] == attachment["id"]
 
 
 def _count_open_fds():
